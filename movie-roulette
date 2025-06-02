@@ -55,11 +55,19 @@ GetOptions (
         "type=s"        => \$item_type,
 );
 
-# check options
-# - server should have right form
-# - type should be movie or series (or whatever)...
+### TODO
+# a usage/help flag
 
-if ($item_type =~ /^(movie)s?$/i) {
+# check options
+
+# server should have right form
+# basic af: http(s)://something.something
+if (!($server =~ m#^https?://.*\..*#)) {
+        die ("invalid server address.");
+}
+
+# type should be movie or series (or whatever)...
+if ($item_type =~ /^movies?$/i) {
         $item_type = "Movie";
 } 
 elsif ($item_type =~ /^series$/i) {
@@ -87,15 +95,11 @@ $client = REST::Client->new();
 if ($verbose) {print "server = $server\n"};
 $client->setHost($server);      
 
-### TODO
-# the server should be an option
-
+# add identity for authorisation
 $client->addHeader('Accept', 'application/json');
 $client->addHeader('X-Emby-Token', $api_key);
 
-# now set the end point of the api
-# given the user options...
-
+# now set the api end point for the request
 $endpoint = "/Items?IncludeItemTypes=$item_type&Recursive=true";
 if ($verbose) {print "request = $endpoint\n"};
 
@@ -103,9 +107,11 @@ if ($verbose) {print "request = $endpoint\n"};
 # poll the api #
 ################
 
+### TODO
 # this may take a while
 # it would be cool if there was a little loader while we waited
 # i.e. fork off the process
+
 $client->GET($endpoint);
 
 $response_code = $client->responseCode();
@@ -147,40 +153,36 @@ if ($response_code == 200) {
                                         $year  = $movie->{ProductionYear} // 'N/A';
                                         print "$title ($year)\n";
                                 }
+
+                                print "watch? [y/N]: ";
+                                chomp($input = <STDIN>);
+                                if (($input =~ /^y$/i)) {
+
+                                        # check vlc exists
+                                        check_vlc_installed();
+
+                                        # get the movie url and load vlc
+                                        $item_id = $movie->{Id};
+                                        
+                                        #$url = "$server/Videos/$item_id/stream?Static=true&api_key=$api_key";
+                                        # or
+                                        $url = "$server/Videos/$item_id/main.m3u8?api_key=$api_key";
+
+                                        if ($verbose) {print "url = $url\n"};
+                                        system("vlc", $url);
+                                        last;
+                                }
+                                else {
+                                        print "go again? [Y/n]: ";
+                                        chomp($input = <STDIN>);
+                                        if (!($input =~ /^y?$/i)) {
+                                                last;
+                                        }
+                                }
+                                # could more info be an option?
                         }
                         else {
                                 print "error arose polling for random library entry... api reponse code: $random_response_code\n."
-                        }
-
-                        #########
-                        # watch #
-                        #########
-
-                        print "watch? [y/N]: ";
-                        my $input = <STDIN>;
-                        chomp($input);
-                        if (($input =~ /^y$/i)) {
-                                $item_id = $movie->{Id};
-                                
-                                #$url = "$server/Videos/$item_id/stream?Static=true&api_key=$api_key";
-                                # or
-                                $url = "$server/Videos/$item_id/main.m3u8?api_key=$api_key";
-
-                                if ($verbose) {print "url = $url\n"};
-                                system("vlc", $url);
-                                last;
-                        }
-                        else {
-                                ################
-                                # re-do random #
-                                ################
-
-                                print "go again? [Y/n]: ";
-                                my $input = <STDIN>;
-                                chomp($input);
-                                if (!($input =~ /^y?$/i)) {
-                                        last;
-                                }
                         }
                 }
         }
@@ -192,3 +194,18 @@ else {
         print "bad response from server.\n"
 }
 
+
+###############
+# subroutines #
+###############
+
+sub check_vlc_installed {
+        my $vlc_install;
+        chomp($vlc_install = `which vlc 2>/dev/null`);      # don't care if it fails
+
+        if ($verbose) {print "vlc install found at: $vlc_install\nl"};
+
+        if (!-x $vlc_install) {
+                die("no vlc found!")
+        }      
+}
