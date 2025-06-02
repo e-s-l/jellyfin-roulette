@@ -11,6 +11,7 @@ use Getopt::Long;
 my (
     $cache_file,
     $cache_ttl,     # time to live
+    $api_key,   
 );
 
 # options
@@ -23,20 +24,19 @@ my (
 
 # should be in main (TODO)
 my (
-    $api_key,   
-    $client,
     $endpoint,
     $response_code,
     $response_content,
     $json,
     $total_count,
     $random_index,
-    $movie,
+    $item,          # item is movie or series
     $title,
     $year,
     $input,
     $item_id,
     $url,
+    $client,
 );
 
 ############
@@ -45,13 +45,6 @@ my (
 
 # seed the random generator
 srand;
-
-### cache config
-# this set-up should happen somewhere special
-
-# the location & name of the cache file
-$cache_file = "jellyfin_roulette.data";     # should be in /tmp/
-$cache_ttl = 0.002;                             # number of days before refresh
 
 ### options ###
 
@@ -63,7 +56,7 @@ $cache_ttl = 0.002;                             # number of days before refresh
 # options defaults:
 $verbose = 0;
 $server = 'http://blue.home:8096';
-$item_type = "Movie";                   #Movie or Series
+$item_type = "Movie";               #"Movie" or "Series"
 $refresh_cache = 0;
 
 GetOptions (
@@ -95,6 +88,36 @@ else {
 
 print "verbose mode on\n" if ($verbose);
 
+
+### cache config ###
+
+# this set-up should happen somewhere special
+
+# the location & name of the cache file
+$cache_file = "/tmp/jellyfin_roulette_".lc($item_type).".data";
+
+# number of days before refresh
+$cache_ttl = 1;
+
+### server access ###
+
+# this will be used in case of downloading a cache
+# or polling for series information
+# hence initialised here
+
+# get api key from environment
+$api_key = $ENV{"JELLYFIN"};
+
+# set-up restful client
+$client = REST::Client->new();
+
+print "server = $server\n" if ($verbose);
+$client->setHost($server);      
+
+# add identity for authorisation
+$client->addHeader('Accept', 'application/json');
+$client->addHeader('X-Emby-Token', $api_key);
+
 #############
 # load data #
 #############
@@ -105,23 +128,9 @@ unless ($json) {
 
     print "polling the server\n" if ($verbose);
     
-    ### server access ###
-
-    # get api key from environment
-    $api_key = $ENV{"JELLYFIN"};
-
-    # set-up restful client
-    $client = REST::Client->new();
-
-    print "server = $server\n" if ($verbose);
-    $client->setHost($server);      
-
-    # add identity for authorisation
-    $client->addHeader('Accept', 'application/json');
-    $client->addHeader('X-Emby-Token', $api_key);
-
     # now set the api end point for the request
     $endpoint = "/Items?IncludeItemTypes=$item_type&Recursive=true";
+
     print "request = $endpoint\n" if ($verbose);
 
     ################
@@ -162,11 +171,11 @@ if ($total_count != 0) {
     while (1) {
         $random_index = int(rand($total_count));
 
-        $movie = $json->{Items}[$random_index];
+        $item = $json->{Items}[$random_index];
 
-        if ($movie) {
-            $title = $movie->{Name} // "unknown";
-            $year  = $movie->{ProductionYear} // "unknown";
+        if ($item) {
+            $title = $item->{Name} // "unknown";
+            $year  = $item->{ProductionYear} // "unknown";
 
             ### this is it:
             print "$title ($year)\n";
@@ -178,13 +187,27 @@ if ($total_count != 0) {
             # check vlc exists
             check_vlc_installed();
 
-            # get the movie url and load vlc
-            $item_id = $movie->{Id};
-            print "item id = $item_id\n" if ($verbose);
-            
-            $url = "$server/Videos/$item_id/".
-                        "stream?Static=true&api_key=$api_key";
+            if ($item_type eq "Movie") {
 
+                # get the movie url
+                $item_id = $item->{Id};
+
+            }
+            elsif ($item_type eq "Series") {
+
+                ### poll server for series info ###
+
+                $item_id = get_episode_one($client, $item);
+            
+                ### TODO
+                # select a random episode from the series...
+            }
+
+            print "item id = $item_id\n" if ($verbose);
+
+            $url = "$server/Videos/$item_id/".
+                    "stream?Static=true&api_key=$api_key";
+        
             print "url = $url\n" if ($verbose);
 
             # start vlc media player
@@ -208,21 +231,49 @@ else {
 # subroutines #
 ###############
 
+sub get_episode_one {
+    # given the series identified
+    # return first episodes id
+
+    my ($client, $item) = @_;
+
+    my $series_name = $item->{Name};
+    my $series_id = $item->{Id};
+
+    my $episodes_endpoint = "/Items?IncludeItemTypes=Episode&Recursive=true".
+                                "&ParentId=$series_id&SortBy=SortName".
+                                    "&SortOrder=Ascending".
+                                        "&StartIndex=0&Limit=1";
+
+
+    $client->GET($episodes_endpoint);
+
+    if ($client->responseCode() == 200) {
+
+        my $episodes_data = decode_json($client->responseContent());
+        my $episodes = $episodes_data->{Items};
+        return $episodes->[0]{Id};
+
+    } else {
+        warn "coudln't access server.\n"
+    }
+}
+
 sub check_vlc_installed {
     # kill this program if no vlc available
 
     my $vlc_install;
     chomp($vlc_install = `which vlc 2>/dev/null`);  
     # pipe 2 out since don't care if which fails, just that vlc exists
-    print "vlc install found at: $vlc_install\n" if ($verbose);
+    print "vlc install found at: $vlc_install\n" if $verbose;
     die("no vlc found!") unless (-x $vlc_install);  
 }
 
 sub load_cache {
-    # returns nothing if no cache
+    # returns nothing if no recent cache
     # otherwise, the data in json form
 
-    print "loading cache\n" if ($verbose);
+    print "loading cache\n" if $verbose;
 
     return unless (-e $cache_file);
     
@@ -236,8 +287,9 @@ sub load_cache {
 }
 
 sub save_cache {
+    # write to file the json data received
 
-    print "saving cache\n" if ($verbose);
+    print "saving cache\n" if $verbose;
 
     my ($data) = @_;
     open(my $fh, ">".$cache_file) || warn("failed to create cache!");
