@@ -1,0 +1,194 @@
+#! /usr/bin/env perl
+
+use strict;
+use warnings;
+
+use REST::Client;
+use JSON;
+use Getopt::Long;
+
+my (
+        $api_key,
+        $verbose,
+        $server,
+        $client,
+        $item_type,
+        $endpoint,
+        $response_code,
+        $response_content,
+        $json,
+        $total_count,
+        $random_index,
+        $random_url,
+        $random_response,
+        $random_response_code,
+        $movie,
+        $title,
+        $year,
+        $input,
+        $item_id,
+        $url,
+);
+
+############
+# prelim's #
+############
+
+# seed the random generator
+srand;
+
+##############################
+# getops here to set whether
+# - movies or series
+# - the server
+# - force cache reload
+##############################
+
+# options defaults:
+$verbose = 0;
+$server = 'http://blue.home:8096';
+$item_type = "Movie";   #Movie or Series
+
+GetOptions (
+        "verbose=f"     => \$verbose,
+        "server=s"      => \$server,
+        "type=s"        => \$item_type,
+);
+
+# check options
+# - server should have right form
+# - type should be movie or series (or whatever)...
+
+if ($item_type =~ /^(movie)s?$/i) {
+        $item_type = "Movie";
+} 
+elsif ($item_type =~ /^series$/i) {
+        $item_type = "Series";
+} else {
+        die("invalid media format requested.");
+}
+
+die ("--verbose must be 0 or 1") unless ($verbose =~ /^(0|1)$/);
+
+# then check cache still within time_to_live
+# if not ok get movies list...
+
+#################
+# server access #
+#################
+
+# get api key from environment
+$api_key = $ENV{"JELLYFIN"};
+if ($verbose) {print "key = $api_key\n"};
+
+# set-up restful client
+$client = REST::Client->new();
+
+if ($verbose) {print "server = $server\n"};
+$client->setHost($server);      
+
+### TODO
+# the server should be an option
+
+$client->addHeader('Accept', 'application/json');
+$client->addHeader('X-Emby-Token', $api_key);
+
+# now set the end point of the api
+# given the user options...
+
+$endpoint = "/Items?IncludeItemTypes=$item_type&Recursive=true";
+if ($verbose) {print "request = $endpoint\n"};
+
+################
+# poll the api #
+################
+
+# this may take a while
+# it would be cool if there was a little loader while we waited
+# i.e. fork off the process
+$client->GET($endpoint);
+
+$response_code = $client->responseCode();
+if ($verbose) {print "received response = $response_code\n"};
+
+if ($response_code == 200) {
+
+        $response_content = $client->responseContent();
+        $json = decode_json($response_content);
+
+        ### TODO
+        # cache the above
+
+        $total_count = $json->{TotalRecordCount};        # (if undef set to zero)
+	
+        if ($total_count != 0) {
+                
+                while (1) {
+                        $random_index = int(rand($total_count));
+
+                        #########################
+                        # poll for random entry #
+                        #########################
+
+                        # poll the server (or cache) for the movie at this random number
+                        $random_url = "/Items?IncludeItemTypes=$item_type&Recursive=true&StartIndex=$random_index&Limit=1";
+                        
+                        $client->GET($random_url);
+
+                        $random_response_code = $client->responseCode();
+
+                        if ($random_response_code == 200) {
+                                $random_response = decode_json($client->responseContent());
+
+                                $movie = $random_response->{Items}[0];
+                                
+                                if ($movie) {
+                                        $title = $movie->{Name} // 'Unknown';
+                                        $year  = $movie->{ProductionYear} // 'N/A';
+                                        print "$title ($year)\n";
+                                }
+                        }
+                        else {
+                                print "error arose polling for random library entry... api reponse code: $random_response_code\n."
+                        }
+
+                        #########
+                        # watch #
+                        #########
+
+                        print "watch? [y/N]: ";
+                        my $input = <STDIN>;
+                        chomp($input);
+                        if (($input =~ /^y$/i)) {
+                                $item_id = $movie->{Id};
+                                
+                                #$url = "$server/Videos/$item_id/stream?Static=true&api_key=$api_key";
+                                # or
+                                $url = "$server/Videos/$item_id/main.m3u8?api_key=$api_key";
+
+                                if ($verbose) {print "url = $url\n"};
+                                system("vlc", $url);
+                                last;
+                        }
+                        else {
+                                ################
+                                # re-do random #
+                                ################
+
+                                print "go again? [Y/n]: ";
+                                my $input = <STDIN>;
+                                chomp($input);
+                                if (!($input =~ /^y?$/i)) {
+                                        last;
+                                }
+                        }
+                }
+        }
+} 
+elsif ($response_code == 401) {
+        print "authorisation issue!\n"
+}
+else {
+        print "bad response from server.\n"
+}
+
