@@ -9,34 +9,34 @@ use Getopt::Long;
 
 # globals
 my (
-        $cache_file
+    $cache_file,
+    $cache_ttl,     # time to live
 );
 
 # options
 my (
-        $verbose,
-        $server,
-        $refresh_cache,
-        $item_type,
+    $verbose,
+    $server,
+    $refresh_cache,
+    $item_type,
 );
 
 # should be in main (TODO)
 my (
-        $api_key,   
-        $client,
-        $endpoint,
-        $response_code,
-        $response_content,
-        $json,
-        $total_count,
-        $random_index,
-        $random_url,
-        $movie,
-        $title,
-        $year,
-        $input,
-        $item_id,
-        $url,
+    $api_key,   
+    $client,
+    $endpoint,
+    $response_code,
+    $response_content,
+    $json,
+    $total_count,
+    $random_index,
+    $movie,
+    $title,
+    $year,
+    $input,
+    $item_id,
+    $url,
 );
 
 ############
@@ -46,8 +46,12 @@ my (
 # seed the random generator
 srand;
 
+### cache config
+# this set-up should happen somewhere special
+
 # the location & name of the cache file
-$cache_file = "jellyfin_roulette.data";       # should be in /tmp/
+$cache_file = "jellyfin_roulette.data";     # should be in /tmp/
+$cache_ttl = 0.002;                             # number of days before refresh
 
 ### options ###
 
@@ -63,10 +67,10 @@ $item_type = "Movie";                   #Movie or Series
 $refresh_cache = 0;
 
 GetOptions (
-        "verbose|v"     => \$verbose,
-        "server|s=s"    => \$server,
-        "type|t=s"      => \$item_type,
-        "refresh|r"     => \$refresh_cache
+    "verbose|v"     => \$verbose,
+    "server|s=s"    => \$server,
+    "type|t=s"      => \$item_type,
+    "refresh|r"     => \$refresh_cache
 );
 
 ### TODO
@@ -75,167 +79,170 @@ GetOptions (
 # check:
 # server should have right form
 # basic af: http(s)://something.something
-if (!($server =~ m#^https?://.*\..*#)) {                # m for custom deliminator
-        die ("invalid server address.");
+if (!($server =~ m#^https?://.*\..*#)) {        # m for custom deliminator
+    die ("invalid server address.");
 }
 # type should be movie or series (or whatever)...
 if ($item_type =~ /^movies?$/i) {
-        $item_type = "Movie";
+    $item_type = "Movie";
 } 
 elsif ($item_type =~ /^series$/i) {
-        $item_type = "Series";
-} else {
-        die("invalid media format requested.");
+    $item_type = "Series";
+} 
+else {
+    die("invalid media format requested.");
 }
 
-if ($verbose) {print "verbose mode on\n"};
+print "verbose mode on\n" if ($verbose);
 
 #############
 # load data #
 #############
 
-unless ($refresh_cache) {
-        if ($verbose) {print "loading cache file\n"};
-        $json = load_cache();
-}
+$json = load_cache() unless ($refresh_cache);
 
 unless ($json) {
 
-        if ($verbose) {print "no cache, polling the server\n"};
-        
-        ### server access ###
+    print "polling the server\n" if ($verbose);
+    
+    ### server access ###
 
-        # get api key from environment
-        $api_key = $ENV{"JELLYFIN"};
+    # get api key from environment
+    $api_key = $ENV{"JELLYFIN"};
 
-        # set-up restful client
-        $client = REST::Client->new();
+    # set-up restful client
+    $client = REST::Client->new();
 
-        if ($verbose) {print "server = $server\n"};
-        $client->setHost($server);      
+    print "server = $server\n" if ($verbose);
+    $client->setHost($server);      
 
-        # add identity for authorisation
-        $client->addHeader('Accept', 'application/json');
-        $client->addHeader('X-Emby-Token', $api_key);
+    # add identity for authorisation
+    $client->addHeader('Accept', 'application/json');
+    $client->addHeader('X-Emby-Token', $api_key);
 
-        # now set the api end point for the request
-        $endpoint = "/Items?IncludeItemTypes=$item_type&Recursive=true";
-        if ($verbose) {print "request = $endpoint\n"};
+    # now set the api end point for the request
+    $endpoint = "/Items?IncludeItemTypes=$item_type&Recursive=true";
+    print "request = $endpoint\n" if ($verbose);
 
-        ################
-        # poll the api #
-        ################
+    ################
+    # poll the api #
+    ################
 
-        ### TODO
-        # this may take a while
-        # it would be cool if there was a little loader while we waited
-        # i.e. fork off the process
+    ### TODO
+    # this may take a while
+    # it would be cool if there was a little loader while we waited
+    # i.e. fork off the process
 
-        $client->GET($endpoint);
+    $client->GET($endpoint);
 
-        $response_code = $client->responseCode();
-        if ($verbose) {print "received response = $response_code\n"};
+    $response_code = $client->responseCode();
+    print "received response = $response_code\n" if ($verbose);
 
-        if ($response_code == 200) {
+    if ($response_code == 200) {
 
-                $response_content = $client->responseContent();
-                $json = decode_json($response_content);
-                save_cache($json);
-
-        }
-        elsif ($response_code == 401) {
-                print "authorisation issue!\n"
-        }
-        else {
-                print "bad response from server.\n"
-        }
+        $response_content = $client->responseContent();
+        $json = decode_json($response_content);
+        save_cache($json);
+    }
+    elsif ($response_code == 401) {
+        print "authorisation issue!\n"
+    }
+    else {
+        print "bad response from server.\n";
+    }
 }
 
 #################
+# get the movie #
+#################
 
-$total_count = $json->{TotalRecordCount} // 0;        # (if undef set to zero)
+$total_count = $json->{TotalRecordCount} // 0;    # (if undef set to zero)
 
 if ($total_count != 0) {
-        
-        while (1) {
-                $random_index = int(rand($total_count));
+    while (1) {
+        $random_index = int(rand($total_count));
 
-                        $movie = $json->{Items}[$random_index];
+        $movie = $json->{Items}[$random_index];
 
-                        if ($movie) {
-                                $title = $movie->{Name} // 'Unknown';
-                                $year  = $movie->{ProductionYear} // 'N/A';
-                                print "$title ($year)\n";
-                        }
+        if ($movie) {
+            $title = $movie->{Name} // "unknown";
+            $year  = $movie->{ProductionYear} // "unknown";
 
-                        print "watch? [y/N]: ";
-                        chomp($input = <STDIN>);
-                        if (($input =~ /^y$/i)) {
-
-                                # check vlc exists
-                                check_vlc_installed();
-
-                                # get the movie url and load vlc
-                                $item_id = $movie->{Id};
-                                if ($verbose) {print "item id = $item_id\n"};
-                                
-                                $url = "$server/Videos/$item_id/stream?Static=true&api_key=$api_key";
-                                # or
-                                #$url = "$server/Videos/$item_id/main.m3u8?api_key=$api_key";
-
-                                if ($verbose) {print "url = $url\n"};
-                                system("vlc", $url);
-                                last;
-                        }
-                        else {
-                                print "go again? [Y/n]: ";
-                                chomp($input = <STDIN>);
-                                if (!($input =~ /^y?$/i)) {
-                                        last;
-                                }
-                        }
-                        # could more info be an option?
+            ### this is it:
+            print "$title ($year)\n";
         }
+
+        print "watch? [y/N]: ";
+        chomp($input = <STDIN>);
+        if (($input =~ /^y$/i)) {
+            # check vlc exists
+            check_vlc_installed();
+
+            # get the movie url and load vlc
+            $item_id = $movie->{Id};
+            print "item id = $item_id\n" if ($verbose);
+            
+            $url = "$server/Videos/$item_id/".
+                        "stream?Static=true&api_key=$api_key";
+
+            print "url = $url\n" if ($verbose);
+
+            # start vlc media player
+            system("vlc", $url);
+            # when vlc's done, what should we do...
+            # should really jump to "go again?"
+        }
+        else {
+            print "go again? [Y/n]: ";
+            chomp($input = <STDIN>);
+            last unless ($input =~ /^y?$/i);
+        }
+        # could more info be an option?
+    }
 }
-else print "no records available!\n";
+else {
+    print "no records available!\n";
+}
 
 ###############
 # subroutines #
 ###############
 
 sub check_vlc_installed {
-        # kill this program if no vlc available
+    # kill this program if no vlc available
 
-        my $vlc_install;
-        chomp($vlc_install = `which vlc 2>/dev/null`);      # don't care if it fails
-
-        if ($verbose) {print "vlc install found at: $vlc_install\n"};
-
-        if (!-x $vlc_install) {
-                die("no vlc found!")
-        }      
+    my $vlc_install;
+    chomp($vlc_install = `which vlc 2>/dev/null`);  
+    # pipe 2 out since don't care if which fails, just that vlc exists
+    print "vlc install found at: $vlc_install\n" if ($verbose);
+    die("no vlc found!") unless (-x $vlc_install);  
 }
 
 sub load_cache {
-        # returns nothing if no cache
-        # otherwise, the data in json form
+    # returns nothing if no cache
+    # otherwise, the data in json form
 
-        unless (-e $cache_file) {return};
-        
-        ### TODO
-        # check ttl of file
+    print "loading cache\n" if ($verbose);
 
-        open(my $fh, $cache_file) || return;
-        my $data = <$fh>;
-        close $fh;
-        return decode_json($data);
+    return unless (-e $cache_file);
+    
+    # check ttl of file
+    return if (-M $cache_file > $cache_ttl);
+
+    open(my $fh, $cache_file) || return;
+    my $data = <$fh>;
+    close $fh;
+    return decode_json($data);
 }
 
 sub save_cache {
-        my ($data) = @_;
-        open(my $fh, ">".$cache_file) || warn("failed to create cache!");
-        print $fh encode_json($data);
-        close $fh;
+
+    print "saving cache\n" if ($verbose);
+
+    my ($data) = @_;
+    open(my $fh, ">".$cache_file) || warn("failed to create cache!");
+    print $fh encode_json($data);
+    close $fh;
 }
 
 ### TODO
