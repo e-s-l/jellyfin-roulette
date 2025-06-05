@@ -88,7 +88,6 @@ else {
 
 print "verbose mode on\n" if ($verbose);
 
-
 ### cache config ###
 
 # this set-up should happen somewhere special
@@ -196,6 +195,14 @@ if ($total_count != 0) {
             elsif ($item_type eq "Series") {
 
                 ### poll server for series info ###
+                #
+                # if series
+                # should ask for first episode 
+                # or random episode
+                # then after that ask, either
+                # next ep? or
+                # another? 
+                #
 
                 $item_id = get_episode_one($client, $item);
             
@@ -213,6 +220,7 @@ if ($total_count != 0) {
             # start vlc media player
             system("vlc", $url);
             # when vlc's done, what should we do...
+            last;
             # should really jump to "go again?"
         }
         else {
@@ -255,7 +263,7 @@ sub get_episode_one {
         return $episodes->[0]{Id};
 
     } else {
-        warn "coudln't access server.\n"
+        warn "couldn't access the server.\n"
     }
 }
 
