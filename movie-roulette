@@ -7,6 +7,21 @@ use REST::Client;
 use JSON;
 use Getopt::Long;
 
+#########
+# about #
+#########
+#
+#
+#
+
+### TODO
+# - a main function
+# - a get more info function?
+#
+
+### to look into
+# - if only loading from cache, sometimes REST client fails...
+
 # globals
 my (
     $cache_file,
@@ -35,7 +50,6 @@ my (
     $year,
     $input,
     $item_id,
-    $url,
     $client,
 );
 
@@ -89,8 +103,6 @@ else {
 print "verbose mode on\n" if ($verbose);
 
 ### cache config ###
-
-# this set-up should happen somewhere special
 
 # the location & name of the cache file
 $cache_file = "/tmp/jellyfin_roulette_".lc($item_type).".data";
@@ -169,7 +181,6 @@ $total_count = $json->{TotalRecordCount} // 0;    # (if undef set to zero)
 if ($total_count != 0) {
     while (1) {
         $random_index = int(rand($total_count));
-
         $item = $json->{Items}[$random_index];
 
         if ($item) {
@@ -180,55 +191,79 @@ if ($total_count != 0) {
             print "$title ($year)\n";
         }
 
+        # could more info be an option?
+
         print "watch? [y/N]: ";
         chomp($input = <STDIN>);
         if (($input =~ /^y$/i)) {
+
             # check vlc exists
+            # or abort now
             check_vlc_installed();
 
             if ($item_type eq "Movie") {
+                # movies are simple, just play 'em
 
-                # get the movie url
                 $item_id = $item->{Id};
+                play_video($item_id);
+                last;
 
             }
             elsif ($item_type eq "Series") {
-
-                ### poll server for series info ###
-                #
                 # if series
                 # should ask for first episode 
                 # or random episode
                 # then after that ask, either
                 # next ep? or
-                # another? 
-                #
+                # another?
 
-                $item_id = get_episode_one($client, $item);
-            
-                ### TODO
-                # select a random episode from the series...
+                my $ep_num; # the current episode
+    
+                my $episodes_count = get_number_of_episodes($client, $item);
+                if ($verbose) {
+                    print "number of episodes: ".$episodes_count."\n";
+                }
+
+                while(1) {
+                    print "ep. num = $ep_num / $episodes_count\n";# if ($verbose);
+
+                    unless (defined $ep_num) {
+                        print "ep. 1? [y/N]: ";
+                        chomp($input = <STDIN>);
+                        if (($input =~ /^y$/i)) {
+                            $ep_num = 1;
+                        }
+                        else {
+                            print "random ep.? [Y/n]: ";
+                            chomp($input = <STDIN>);
+                            if (($input =~ /^y?$/i)) {
+                                $ep_num = int(rand($episodes_count));
+                            }
+                            else {
+                                last;
+                            }
+                        }
+                    } else {
+                        print "next ep.? [Y/n]: ";
+                        chomp($input = <STDIN>);
+                        last unless ($input =~ /^y?$/i);
+                        ++$ep_num;
+                    }
+                    if (defined $ep_num && $ep_num <= $episodes_count){
+                        $item_id = get_episode($client, $item, $ep_num);
+                        play_video($item_id);
+                    }
+                    else {
+                        print("outta ep's!\n");
+                        last;
+                    }
+                }
             }
-
-            print "item id = $item_id\n" if ($verbose);
-
-            $url = "$server/Videos/$item_id/".
-                    "stream?Static=true&api_key=$api_key";
-        
-            print "url = $url\n" if ($verbose);
-
-            # start vlc media player
-            system("vlc", $url);
-            # when vlc's done, what should we do...
-            last;
-            # should really jump to "go again?"
         }
-        else {
-            print "go again? [Y/n]: ";
-            chomp($input = <STDIN>);
-            last unless ($input =~ /^y?$/i);
-        }
-        # could more info be an option?
+
+        print "go again? [Y/n]: ";
+        chomp($input = <STDIN>);
+        last unless ($input =~ /^y?$/i);
     }
 }
 else {
@@ -239,43 +274,106 @@ else {
 # subroutines #
 ###############
 
-sub get_episode_one {
+### poll server for series info ###
+
+sub get_number_of_episodes {
+    # given api client and series identifier
+    # return the total number of episodes
+    #
+
+    my $episodes_count = 0;
+    my ($client, $item) = @_;
+    my $series_id = $item->{Id};
+    my $endpoint = "/Items?IncludeItemTypes=Episodes&Recursive=true&ParentId=$series_id";
+
+    $client->GET($endpoint);
+    my $response_code = $client->responseCode();
+
+    if ($response_code == 200) {
+        my $data = decode_json($client->responseContent());
+        $episodes_count = $data->{TotalRecordCount} // 0;
+    } else {
+        print "got bad response: $response_code\n" if ($verbose);
+    }
+
+    return $episodes_count;
+}
+
+sub get_episode {
     # given the series identified
     # return first episodes id
 
-    my ($client, $item) = @_;
+    my ($client, $item, $episode_num) = @_;
+
+    my $start_index;
+    # this assumes $start_index corresponds to episode number
+
+    if (defined $episode_num && $episode_num > 0) {
+        $start_index = $episode_num - 1;
+    }
+    else {
+        $start_index = 0;
+    }
 
     my $series_name = $item->{Name};
     my $series_id = $item->{Id};
 
+    # this is the endpoint for the first episode of a series
     my $episodes_endpoint = "/Items?IncludeItemTypes=Episode&Recursive=true".
                                 "&ParentId=$series_id&SortBy=SortName".
                                     "&SortOrder=Ascending".
-                                        "&StartIndex=0&Limit=1";
+                                        "&StartIndex=$start_index&Limit=1";
 
 
     $client->GET($episodes_endpoint);
 
-    if ($client->responseCode() == 200) {
+    my $response_code = $client->responseCode();
 
+    if ($response_code == 200) {
         my $episodes_data = decode_json($client->responseContent());
         my $episodes = $episodes_data->{Items};
         return $episodes->[0]{Id};
-
     } else {
+        print "response: $response_code\n";
         warn "couldn't access the server.\n"
     }
 }
+
+### video play-back
+
+sub play_video {
+    # need to fix this to pass the right variables
+
+    my ($item_id) = @_;
+    print "item id = $item_id\n" if ($verbose);
+
+    my $url = "$server/Videos/$item_id/".
+                "stream?Static=true&api_key=$api_key";
+
+    print "url = $url\n" if ($verbose);
+
+    # start vlc media player
+    if ($verbose) {
+        system("vlc", $url);
+    } else {
+        system("bash", "-c", "vlc '$url' >/dev/null 2>&1");
+    }
+    # when vlc's done, what should we do...
+}
+
 
 sub check_vlc_installed {
     # kill this program if no vlc available
 
     my $vlc_install;
+
     chomp($vlc_install = `which vlc 2>/dev/null`);  
     # pipe 2 out since don't care if which fails, just that vlc exists
     print "vlc install found at: $vlc_install\n" if $verbose;
     die("no vlc found!") unless (-x $vlc_install);  
 }
+
+### caches
 
 sub load_cache {
     # returns nothing if no recent cache
@@ -304,6 +402,3 @@ sub save_cache {
     print $fh encode_json($data);
     close $fh;
 }
-
-### TODO
-# a main function
