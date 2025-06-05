@@ -3,38 +3,40 @@
 use strict;
 use warnings;
 
-use REST::Client;
-use JSON;
-use Getopt::Long;
+use REST::Client;                   # to simplify the api access
+use JSON;                           # to process the returned data
+use Getopt::Long;                   # for the various program options
+use Time::HiRes qw(usleep);         # for the spinner loader
 
 #########
 # about #
 #########
-#
-#
-#
+# a simple command line interface to a jellyfin server
+# roulette-style pick a movie or series at random
+# then choose to watch it or try again.
 
 ### TODO
 # - a main function
 # - a get more info function?
-#
+# - user specified media players (w/ vlc as default)
 
 ### to look into
 # - if only loading from cache, sometimes REST client fails...
 
 # globals
 my (
-    $cache_file,
+    $cache_file,    # temporary json dump
     $cache_ttl,     # time to live
-    $api_key,   
+    $api_key,       # source from environment
 );
 
-# options
+# options/globals
 my (
     $verbose,
     $server,
     $refresh_cache,
     $item_type,
+    $help,
 );
 
 # should be in main (TODO)
@@ -45,10 +47,10 @@ my (
     $json,
     $total_count,
     $random_index,
-    $item,          # item is movie or series
+    $item,                  # item is movie or series
     $title,
     $year,
-    $input,
+    $input,                 # user in: nothing, y or yes, basically
     $item_id,
     $client,
 );
@@ -66,24 +68,48 @@ srand;
 # - movies or series
 # - the server
 # - force cache reload
+# - debug prints
+# - show help and exit
 
-# options defaults:
+# defaults:
+
 $verbose = 0;
 $server = 'http://blue.home:8096';
-$item_type = "Movie";               #"Movie" or "Series"
+$item_type = "Movie";                   #"Movie" or "Series"
 $refresh_cache = 0;
+$help = 0;
 
 GetOptions (
     "verbose|v"     => \$verbose,
     "server|s=s"    => \$server,
     "type|t=s"      => \$item_type,
-    "refresh|r"     => \$refresh_cache
+    "refresh|r"     => \$refresh_cache,
+    "help|h"        => \$help,
 );
 
-### TODO
-# a usage/help flag
+if ($help) {
 
-# check:
+print <<HELP;
+This perl script implements roulette access to a jellyfin server.
+A simple command line interface to a jellyfin server. 
+Roulette-style generates a movie or series at random from the library.
+Then choose to watch it or try again.
+
+    Usage: $0 [options]
+
+The following options are available:
+    --help              Produce this output and exit.
+    --verbose           Include additional prints.
+    --refresh           Force reload of the library cache.
+    --server=<host>     The jellyfin server host including port number.
+    --type=<media>      Media type, can be movies or series.
+
+HELP
+    exit();
+}
+
+# checks:
+
 # server should have right form
 # basic af: http(s)://something.something
 if (!($server =~ m#^https?://.*\..*#)) {        # m for custom deliminator
@@ -138,7 +164,7 @@ $json = load_cache() unless ($refresh_cache);
 unless ($json) {
 
     print "polling the server\n" if ($verbose);
-    
+
     # now set the api end point for the request
     $endpoint = "/Items?IncludeItemTypes=$item_type&Recursive=true";
 
@@ -148,18 +174,34 @@ unless ($json) {
     # poll the api #
     ################
 
-    ### TODO
     # this may take a while
-    # it would be cool if there was a little loader while we waited
-    # i.e. fork off the process
+    my $spinner_pid = fork();
+    # RECALL: returns undef if error, 0 if child, PID of child if parent
+    warn "couldn't fork of loader" unless defined $spinner_pid;
 
+    if ($spinner_pid == 0) {
+        my @spin = qw(| / - \\);
+        $| = 1;                     # set autoflush
+        my $i = 0;
+        while (1) {
+            print "$spin[$i]\r";
+            $i = ($i + 1) % @spin;
+            usleep(100_000);        # 100_000
+        }
+        exit(0);
+    }
+    # else: back in the parent
     $client->GET($endpoint);
+    usleep(1000_000);                       # just while we're testing
+
+    # once we've got the get, kill the loader
+    kill 'TERM', $spinner_pid;
+    waitpid($spinner_pid, 0);
 
     $response_code = $client->responseCode();
     print "received response = $response_code\n" if ($verbose);
 
     if ($response_code == 200) {
-
         $response_content = $client->responseContent();
         $json = decode_json($response_content);
         save_cache($json);
@@ -176,7 +218,7 @@ unless ($json) {
 # get the movie #
 #################
 
-$total_count = $json->{TotalRecordCount} // 0;    # (if undef set to zero)
+$total_count = $json->{TotalRecordCount} // 0;      # (if undef set to zero)
 
 if ($total_count != 0) {
     while (1) {
@@ -191,14 +233,14 @@ if ($total_count != 0) {
             print "$title ($year)\n";
         }
 
+        ### TODO
         # could more info be an option?
 
-        print "watch? [y/N]: ";
+        print "\rwatch? [y/N]: ";
         chomp($input = <STDIN>);
-        if (($input =~ /^y$/i)) {
+        if (($input =~ /^y(es)?$/i)) {
 
-            # check vlc exists
-            # or abort now
+            # check vlc exists or abort now
             check_vlc_installed();
 
             if ($item_type eq "Movie") {
@@ -210,43 +252,47 @@ if ($total_count != 0) {
 
             }
             elsif ($item_type eq "Series") {
-                # if series
-                # should ask for first episode 
-                # or random episode
-                # then after that ask, either
-                # next ep? or
-                # another?
+                # if series should ask:
+                # first episode or random episode?
+                # then after that ask:
+                # next ep or another?
 
-                my $ep_num; # the current episode
-    
+                my $ep_num = 0;         # the current episode
                 my $episodes_count = get_number_of_episodes($client, $item);
+
+                if ($episodes_count == -1) {
+                    warn "error retrieving series information";
+                    last;
+                }
+
                 if ($verbose) {
                     print "number of episodes: ".$episodes_count."\n";
                 }
 
                 while(1) {
-                    print "ep. num = $ep_num / $episodes_count\n";# if ($verbose);
+                    print "episode = $ep_num/$episodes_count\n" if ($verbose);
 
-                    unless (defined $ep_num) {
-                        print "ep. 1? [y/N]: ";
+                    if ($ep_num == 0) {
+                        print "\rep. 1? [y/N]: ";
                         chomp($input = <STDIN>);
-                        if (($input =~ /^y$/i)) {
+                        if (($input =~ /^y(es)?$/i)) {
                             $ep_num = 1;
                         }
                         else {
-                            print "random ep.? [Y/n]: ";
+                            print "\rrandom ep.? [Y/n]: ";
                             chomp($input = <STDIN>);
-                            if (($input =~ /^y?$/i)) {
+                            if (($input =~ /^$|^y(es)?$/i)) {
                                 $ep_num = int(rand($episodes_count));
                             }
                             else {
                                 last;
                             }
                         }
-                    } else {
-                        print "next ep.? [Y/n]: ";
+                    }
+                    else {
+                        print "\rnext ep.? [Y/n]: ";
                         chomp($input = <STDIN>);
-                        last unless ($input =~ /^y?$/i);
+                        last unless ($input =~ /^$|^y(es)?$/i);
                         ++$ep_num;
                     }
                     if (defined $ep_num && $ep_num <= $episodes_count){
@@ -261,9 +307,9 @@ if ($total_count != 0) {
             }
         }
 
-        print "go again? [Y/n]: ";
+        print "\rgo again? [Y/n]: ";
         chomp($input = <STDIN>);
-        last unless ($input =~ /^y?$/i);
+        last unless ($input =~ /^$|y(es)?$/i);
     }
 }
 else {
@@ -279,24 +325,36 @@ else {
 sub get_number_of_episodes {
     # given api client and series identifier
     # return the total number of episodes
-    #
+    # or -1 if there's a problem
 
-    my $episodes_count = 0;
     my ($client, $item) = @_;
-    my $series_id = $item->{Id};
-    my $endpoint = "/Items?IncludeItemTypes=Episodes&Recursive=true&ParentId=$series_id";
+
+    my (
+        $episodes_count,
+        $series_id,
+        $endpoint,
+        $response_code,
+        $data,
+    );
+
+    $episodes_count = 0;
+
+    $series_id = $item->{Id};
+    $endpoint = "/Items?IncludeItemTypes=Episodes".
+                    "&Recursive=true&ParentId=$series_id";
 
     $client->GET($endpoint);
-    my $response_code = $client->responseCode();
+    $response_code = $client->responseCode();
 
     if ($response_code == 200) {
-        my $data = decode_json($client->responseContent());
+        $data = decode_json($client->responseContent());
         $episodes_count = $data->{TotalRecordCount} // 0;
-    } else {
+    }
+    else {
         print "got bad response: $response_code\n" if ($verbose);
     }
 
-    return $episodes_count;
+    return int($episodes_count) - 1;
 }
 
 sub get_episode {
@@ -305,8 +363,15 @@ sub get_episode {
 
     my ($client, $item, $episode_num) = @_;
 
-    my $start_index;
-    # this assumes $start_index corresponds to episode number
+    my (
+        $start_index,           # $start_index corresponds to episode number
+        $series_name,
+        $series_id,
+        $episodes_endpoint,
+        $response_code,
+        $episodes_data,
+        $episodes,
+    );
 
     if (defined $episode_num && $episode_num > 0) {
         $start_index = $episode_num - 1;
@@ -315,25 +380,25 @@ sub get_episode {
         $start_index = 0;
     }
 
-    my $series_name = $item->{Name};
-    my $series_id = $item->{Id};
+    $series_name = $item->{Name};
+    $series_id = $item->{Id};
 
-    # this is the endpoint for the first episode of a series
-    my $episodes_endpoint = "/Items?IncludeItemTypes=Episode&Recursive=true".
+    # this is the endpoint for an episode of a series
+    $episodes_endpoint = "/Items?IncludeItemTypes=Episode&Recursive=true".
                                 "&ParentId=$series_id&SortBy=SortName".
                                     "&SortOrder=Ascending".
                                         "&StartIndex=$start_index&Limit=1";
 
-
     $client->GET($episodes_endpoint);
 
-    my $response_code = $client->responseCode();
+    $response_code = $client->responseCode();
 
     if ($response_code == 200) {
-        my $episodes_data = decode_json($client->responseContent());
-        my $episodes = $episodes_data->{Items};
+        $episodes_data = decode_json($client->responseContent());
+        $episodes = $episodes_data->{Items};
         return $episodes->[0]{Id};
-    } else {
+    }
+    else {
         print "response: $response_code\n";
         warn "couldn't access the server.\n"
     }
@@ -342,12 +407,20 @@ sub get_episode {
 ### video play-back
 
 sub play_video {
-    # need to fix this to pass the right variables
+    # given the id of an item
+    # construct the right url and pass to vlc
+
+    print "playing video\n" if $verbose;
 
     my ($item_id) = @_;
+
+    my (
+        $url,
+    );
+
     print "item id = $item_id\n" if ($verbose);
 
-    my $url = "$server/Videos/$item_id/".
+    $url = "$server/Videos/$item_id/".
                 "stream?Static=true&api_key=$api_key";
 
     print "url = $url\n" if ($verbose);
@@ -355,17 +428,19 @@ sub play_video {
     # start vlc media player
     if ($verbose) {
         system("vlc", $url);
-    } else {
+    }
+    else {
         system("bash", "-c", "vlc '$url' >/dev/null 2>&1");
     }
     # when vlc's done, what should we do...
 }
 
-
 sub check_vlc_installed {
     # kill this program if no vlc available
 
-    my $vlc_install;
+    my (
+        $vlc_install,
+    );
 
     chomp($vlc_install = `which vlc 2>/dev/null`);  
     # pipe 2 out since don't care if which fails, just that vlc exists
@@ -381,13 +456,18 @@ sub load_cache {
 
     print "loading cache\n" if $verbose;
 
+    my (
+        $fh,
+        $data,
+    );
+
     return unless (-e $cache_file);
-    
-    # check ttl of file
+
+    # check ttl of file:
     return if (-M $cache_file > $cache_ttl);
 
-    open(my $fh, $cache_file) || return;
-    my $data = <$fh>;
+    open($fh, $cache_file) || return;
+    $data = <$fh>;
     close $fh;
     return decode_json($data);
 }
@@ -398,7 +478,12 @@ sub save_cache {
     print "saving cache\n" if $verbose;
 
     my ($data) = @_;
-    open(my $fh, ">".$cache_file) || warn("failed to create cache!");
+
+    my (
+        $fh,
+    );
+
+    open($fh, ">".$cache_file) || warn("failed to create cache!");
     print $fh encode_json($data);
     close $fh;
 }

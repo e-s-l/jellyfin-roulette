@@ -10,7 +10,7 @@ After initial run, caches a top-level list of movies/series.
 Options are:
 ```
 --type: movies or series
---server: an non-hardcoded url (including http://) for the server.
+--server: an non-hardcoded url (including http:// and port) for the server.
 --verbose: print debug info.
 --reload: reload/refresh the initial cache file.
 ```
@@ -24,4 +24,3 @@ Continue this (fraught) dive into perl scripting.
 ## references
 
 https://jmshrv.com/posts/jellyfin-api/
-
