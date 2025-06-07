@@ -19,6 +19,9 @@ use Time::HiRes qw(usleep);         # for the spinner loader
 # - a main function
 # - a get more info function?
 # - user specified media players (w/ vlc as default)
+# - standard is: 
+#               rc for return code
+#               rv for return value, etc
 
 ### to look into
 # - if only loading from cache, sometimes REST client fails...
@@ -88,8 +91,7 @@ GetOptions (
 );
 
 if ($help) {
-
-print <<HELP;
+    print <<HELP;
 This perl script implements roulette access to a jellyfin server.
 A simple command line interface to a jellyfin server. 
 Roulette-style generates a movie or series at random from the library.
