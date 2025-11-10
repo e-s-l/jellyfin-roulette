@@ -1,0 +1,173 @@
+#! /usr/bin/env perl
+
+use strict;
+use warnings;
+
+# a command-line program to search and edit tags of entries
+# in a jellyfin database.
+# just a mangling of the roulette code to different endpoints.
+
+use REST::Client;                   # to simplify the api access
+use JSON::PP;                           # to process the returned data
+use Getopt::Long;                   # for the various program options
+use Time::HiRes qw(usleep);         # for the spinner loader
+use Data::Dump qw(dump);             # to pretty print hashes etc.
+
+### TO FINISH
+# command line
+# join tags by comma
+# url-encode
+
+# globals
+my (
+    $api_key,       # source from environment
+);
+
+# options
+my (
+    $verbose,
+    $server,
+    $help,
+);
+
+### TODO
+# additional/optional inputs to add:
+# libraries (item types)
+# tags (-t Taxi)
+
+my $input;
+my @tags;
+
+$verbose = 0;
+$server = 'http://192.168.10.11:8096';      # 'http://blue.home:8096'
+$help = 0;
+
+GetOptions (
+    "verbose|v"     => \$verbose,
+    "server|s=s"    => \$server,
+    "help|h"        => \$help,
+);
+
+
+if ($help) {
+    print <<HELP;
+USAGE... TODO... NOT MUCH HELP.
+
+    Usage: $0 [options]
+
+
+HELP
+    exit();
+}
+
+
+my (
+    $endpoint,
+    $response_code,
+    $response_content,
+    $data,
+    $client,
+);
+
+# get api key from environment
+$api_key = $ENV{"JELLYFIN"};
+
+if (! defined($api_key)) {
+    die "Could not load api key from environment.\n";
+}
+
+# set-up restful client
+$client = REST::Client->new();
+
+print "server = $server\n" if ($verbose);
+$client->setHost($server);      
+
+# add identity for authorisation
+$client->addHeader('Accept', 'application/json');
+$client->addHeader('X-Emby-Token', $api_key);
+
+
+###
+# search all entries with given tag
+###
+
+print(" Please enter tags (comma separated) to search for:\n");
+chomp($input = <STDIN>);
+@tags = split(/,/, $input);
+
+my $tags_endpoint = "/Items?tags=";
+
+foreach my $tag (@tags) {
+    $tags_endpoint .= lc($tag)
+    ### FIXME add comma if more than one
+}
+
+### FIXME: need to sanitise..
+
+# now set the api end point for the request
+$endpoint = $tags_endpoint."&Recursive=true&Fields=Tags,Name,Type";
+#$endpoint = "/Items?tags=$tag1&IncludeItemTypes=$item_type&Recursive=true&Fields=Tags,Name,Type&EnableTotalRecordCount=true";
+
+print("Endpoint: $endpoint\n") if $verbose;
+
+$client->GET($endpoint);
+
+$response_code = $client->responseCode();
+print "received response = $response_code\n" if ($verbose);
+
+if ($response_code == 200) {
+    $response_content = $client->responseContent();
+    $data = decode_json($response_content);
+}
+elsif ($response_code == 401) {
+    print "authorisation issue!\n"
+}
+else {
+    print "bad response from server.\n";
+}
+
+if (defined($data)){
+
+
+    #print "The json data in string form:\n";
+    #my $json_string = encode_json $data; 
+    #print $json_string."\n----------------------\n"; 
+
+    my %data_hash = %{$data};
+
+    foreach my $key (sort keys %data_hash) {
+        # print "$key: $data_hash{$key}\n";
+
+        if ("Items" eq $key) {
+           my @items_array = @{$data_hash{$key}};
+
+            if (@items_array) {
+
+                foreach my $item (@items_array) {
+                    #print dump($item);
+
+                    my %item_hash = %{$item};
+                    
+                    my @what_we_care_about = qw(Name Type Tags);
+
+                    foreach my $key (@what_we_care_about) {
+                        if (defined($item_hash{$key})) {
+                            if ("Tags" eq $key) { 
+                                my @tags_array = @{$item_hash{$key}};
+                                
+                                print "TAG:\n";
+                                foreach my $tag (@tags_array) {
+                                    print "\'$tag\'"
+                                }
+                                print "\n";
+                                next;
+                            }
+                            print "$key: $item_hash{$key}\n"
+                        }
+                    }
+                    print "=================== \n";
+                }
+            }
+        } 
+    }
+}

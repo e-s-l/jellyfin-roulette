@@ -1,0 +1,5 @@
+#! /usr/bin/env bash
+# run like . (source) script
+# NOT ./script, since the latter launches a subshell
+export JELLYFIN=123456789
+
