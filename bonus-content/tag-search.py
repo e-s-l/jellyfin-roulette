@@ -38,20 +38,15 @@ headers = {
 print("Please enter the tags (comma-seperated):")
 tags = list(input().split(","))
 tags_str = (",").join(tags)
-### DEBUG
-#print(tags)
-#print(tags_str)
-
 
 endpoint = f"/Items?tags={tags_str}&Recursive=true&Fields=Tags,Name,Type"
 
 ### FIXME 
-# url encode the endpoint
+# url encode the tags?
 
 ### TODO
 # add to the end point'&IncludeItemTypes={library}' if library specified in command line args
 
-#print(endpoint)
 
 # poll the server
 
@@ -76,12 +71,13 @@ else:
 
 if data and "Items" in data:
     items = data["Items"]
-    for item in items:
+    for i, item in enumerate(items):
+        print(f"{i+1}:")
         for key in ["Name", "Type", "Tags"]:
             if key in item:
                 if key == "Tags":
                     tags = item[key]
-                    print("TAG:")
+                    print("TAGS: ", end="")
                     for tag in tags:
                         print(f"'{tag}'", end="")
                     print()
@@ -90,9 +86,7 @@ if data and "Items" in data:
         print("===================")
 
 
-
-
-
-
 ### TODO
-# a main function
+# argparser
+# some functions
+# actual editing capabilties (bulk and per item)

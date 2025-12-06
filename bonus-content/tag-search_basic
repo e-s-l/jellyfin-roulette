@@ -14,7 +14,7 @@ use Time::HiRes qw(usleep);         # for the spinner loader
 use Data::Dump qw(dump);             # to pretty print hashes etc.
 
 ### TO FINISH
-# command line
+# command line inputs
 # join tags by comma
 # url-encode
 
@@ -91,23 +91,25 @@ $client->addHeader('X-Emby-Token', $api_key);
 # search all entries with given tag
 ###
 
-print(" Please enter tags (comma separated) to search for:\n");
+print("Please enter tags (comma separated) to search for:\n");
 chomp($input = <STDIN>);
 @tags = split(/,/, $input);
 
-my $tags_endpoint = "/Items?tags=";
 
-foreach my $tag (@tags) {
-    $tags_endpoint .= lc($tag)
-    ### FIXME add comma if more than one
-}
+my $tags_endpoint = "/Items?tags=".join(",", @tags);;
+
 
 ### FIXME: need to sanitise..
+# url encode
+#$endpoint =~ s/([^^A-Za-z0-9\-_.!~*'()])/ sprintf "%%%0x", ord $1 /eg;
+
 
 # now set the api end point for the request
 $endpoint = $tags_endpoint."&Recursive=true&Fields=Tags,Name,Type";
 #$endpoint = "/Items?tags=$tag1&IncludeItemTypes=$item_type&Recursive=true&Fields=Tags,Name,Type&EnableTotalRecordCount=true";
 
+
+### debug
 print("Endpoint: $endpoint\n") if $verbose;
 
 $client->GET($endpoint);
@@ -128,34 +130,21 @@ else {
 
 if (defined($data)){
 
-
-    #print "The json data in string form:\n";
-    #my $json_string = encode_json $data; 
-    #print $json_string."\n----------------------\n"; 
-
     my %data_hash = %{$data};
+    my @what_we_care_about = qw(Name Type Tags);
 
     foreach my $key (sort keys %data_hash) {
-        # print "$key: $data_hash{$key}\n";
-
         if ("Items" eq $key) {
            my @items_array = @{$data_hash{$key}};
-
             if (@items_array) {
-
+                print "=================== \n";
                 foreach my $item (@items_array) {
-                    #print dump($item);
-
                     my %item_hash = %{$item};
-                    
-                    my @what_we_care_about = qw(Name Type Tags);
-
                     foreach my $key (@what_we_care_about) {
                         if (defined($item_hash{$key})) {
                             if ("Tags" eq $key) { 
                                 my @tags_array = @{$item_hash{$key}};
-                                
-                                print "TAG:\n";
+                                print "TAGS: ";
                                 foreach my $tag (@tags_array) {
                                     print "\'$tag\'"
                                 }
